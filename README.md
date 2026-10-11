@@ -8,7 +8,17 @@ A planilha é lida no navegador e fica guardada só no aparelho. Nenhum dado de 
 
 ## Formato da planilha
 
-Uma linha por dia, com as colunas `Data`, `Base`, `Programa`, `Hotel` e `Diária`. A coluna sem título logo após `Programa` é lida como detalhes do dia. O hotel é informado na primeira noite e vale para as noites seguintes que tiverem diária.
+O formato principal é o modelo `public/modelo-roteiro.xlsx` (no app: "Baixar modelo vazio"), com as abas:
+
+- `Dias`: cidade e anotações de cada dia (opcional)
+- `Compromissos`: uma linha por atividade, com horário, duração, tipo, funcionamento, trajeto, reserva e custo
+- `Hospedagem`: uma linha por hotel, com check-in e check-out
+- `Transporte`: uma linha por trecho de voo, trem ou ônibus
+- `Pendências`: contagens e custos por fórmula
+
+O app importa esse modelo e exporta de volta para ele ("Baixar Excel"), sem perda. A planilha antiga, de uma linha por dia (`Data`, `Base`, `Programa`, `Hotel`, `Diária`), continua aceita.
+
+Para alterar o modelo, edite `scripts/gerar-modelo.py` e rode `python3 scripts/gerar-modelo.py`.
 
 ## Desenvolvimento
 

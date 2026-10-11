@@ -111,3 +111,16 @@ h1 { font-size: clamp(1.5rem, 5.5vw, 2.1rem); line-height: 1.15; margin: 4px 0 8
 .ed-estado:empty { display: none; }
 .btn-mini:disabled { opacity: 0.5; }
 .comp-titulo small.alerta { color: #b3261e; font-weight: 800; }
+
+.filtros { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 18px; }
+.filtros .btn-mini { min-height: 38px; }
+.filtros .btn-mini[aria-pressed='true'] { background: var(--tinta); border-color: var(--tinta); color: #fff; }
+.custos-caixa { margin-top: 14px; padding: 12px 16px; border-radius: 18px; background: var(--cartao); box-shadow: var(--sombra); }
+.custos-caixa summary { font-weight: 800; cursor: pointer; min-height: 32px; }
+.custos { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+.custos th, .custos td { padding: 6px 4px; text-align: right; border-top: 1px solid var(--linha); }
+.custos th:first-child { text-align: left; }
+.custos thead th { border-top: 0; color: var(--suave); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.custos tbody th { font-weight: 600; }
+.custos tr.total th, .custos tr.total td { font-weight: 800; }
+.editor select { width: 100%; min-width: 0; font: inherit; font-size: 1rem; padding: 10px 8px; border: 2px solid var(--linha); border-radius: 12px; background: #fffdfa; color: var(--tinta); }

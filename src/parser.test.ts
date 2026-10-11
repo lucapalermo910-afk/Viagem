@@ -63,21 +63,29 @@ describe('lerHotel', () => {
 })
 
 describe('extrairCompromissos', () => {
-  it('lê decolagem e pouso de cada trecho de voo', () => {
+  it('lê cada trecho de voo como um compromisso', () => {
     const c = extrairCompromissos('AAA 00:05 Terminal 3 > BBB 06:55 Terminal 3\nBBB 09:05 > CCC 17:35', '', 'voo', '—')
-    expect(c.map((x) => `${x.hora} ${x.titulo}`)).toEqual([
-      '00:05 Decolagem de AAA', '06:55 Pouso em BBB', '09:05 Decolagem de BBB', '17:35 Pouso em CCC',
+    expect(c.map((x) => `${x.hora} ${x.titulo} chega ${x.chegada}`)).toEqual([
+      '00:05 AAA → BBB chega 06:55', '09:05 BBB → CCC chega 17:35',
     ])
+    expect(c[0]).toMatchObject({ tipo: 'voo', de: 'AAA', para: 'BBB', terminal: 'Terminal 3' })
   })
   it('reconhece 16H, 16H30 e 13h50 e ignora números de endereço', () => {
     const c = extrairCompromissos('A → B', 'Guia (R$739,74)\nHorário de partida: 13h50\nLocal: 1 Chome-8 Hirooka, 920-0031', 'deslocamento', 'X')
-    expect(c).toEqual([{ hora: '13:50', titulo: 'Partida: A → B', local: '1 Chome-8 Hirooka, 920-0031' }])
-    expect(extrairCompromissos('', 'MIRANTE 16H OU 16H30', 'passeio', 'X')[0]).toEqual({ hora: '16:00', titulo: 'MIRANTE', local: 'MIRANTE, X' })
+    expect(c).toEqual([{ hora: '13:50', titulo: 'A → B', local: '1 Chome-8 Hirooka, 920-0031', tipo: 'outro', de: 'A', para: 'B', terminal: '1 Chome-8 Hirooka, 920-0031' }])
+    expect(extrairCompromissos('', 'MIRANTE 16H OU 16H30', 'passeio', 'X')[0]).toEqual({ hora: '16:00', titulo: 'MIRANTE', local: 'MIRANTE, X', tipo: 'passeio' })
   })
   it('separa as paradas de um dia de passeio', () => {
     const c = extrairCompromissos('Jardim, castelo; Mercado', '', 'passeio', 'Cidade')
     expect(c.map((x) => x.titulo)).toEqual(['Jardim', 'castelo', 'Mercado'])
-    expect(c[0]).toEqual({ hora: null, titulo: 'Jardim', local: 'Jardim, Cidade' })
+    expect(c[0]).toEqual({ hora: null, titulo: 'Jardim', local: 'Jardim, Cidade', tipo: 'passeio' })
+  })
+  it('transforma o dia de deslocamento em um trecho', () => {
+    expect(extrairCompromissos('Tokyo → Kanazawa de Hokuriku Shinkansen', '', 'deslocamento', 'Kanazawa')).toEqual([{
+      hora: null, titulo: 'Tokyo → Kanazawa', local: 'Tokyo', tipo: 'trem', de: 'Tokyo', para: 'Kanazawa',
+      obs: 'Tokyo → Kanazawa de Hokuriku Shinkansen',
+    }])
+    expect(extrairCompromissos('A → B → C; jantar', '', 'deslocamento', 'C')[0]).toMatchObject({ de: 'A', para: 'C', tipo: 'outro', obs: 'A → B → C' })
   })
   it('não inventa paradas quando o dia ainda é uma dúvida', () => {
     expect(extrairCompromissos('Sintra ou Cascais?', '', 'passeio', 'X')).toEqual([])

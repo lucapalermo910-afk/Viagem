@@ -1,17 +1,21 @@
 import './style.css'
-import { readSheet } from 'read-excel-file/browser'
-import { linhasParaViagem, pendenciasDoTexto } from './parser'
+import lerPlanilha from 'read-excel-file/browser'
+import { linhasParaViagem } from './parser'
+import { abasParaViagem, ehModeloNovo, ROTULO_RESERVA, ROTULO_TIPO, TRANSPORTES, type Abas } from './modelo'
+import { doCompromisso, recalcular } from './pendencias'
+import { gerarExcel } from './exportar'
 import { viagemExemplo } from './exemplo'
-import type { Compromisso, Dia, Viagem } from './types'
+import type { Compromisso, Dia, Reserva, TipoComp, Viagem } from './types'
 import { horarioNoDia, lerMaps } from './maps'
 import { lerImagem } from './ocr'
 import { distanciaKm, estimar, FOLGA_MIN, type Estimativa, type Ponto } from './trajeto'
 
-const CHAVE = 'viagem:v2'
+const CHAVE = 'viagem:v3'
 const app = document.querySelector<HTMLDivElement>('#app')!
 
 let viagem: Viagem | null = carregar()
-let soPendencias = false
+type Filtro = 'tudo' | 'pendencias' | 'restaurante' | 'ingresso' | 'transporte'
+let filtro: Filtro = 'tudo'
 let erro = ''
 let aviso = ''
 
@@ -79,10 +83,11 @@ const ROTULO = { voo: 'Voo', deslocamento: 'Deslocamento', passeio: 'Passeio', l
 async function importar(arquivo: File) {
   erro = ''
   if (viagem?.dias.some((d) => d.editado) &&
-    !confirm('Importar a planilha apaga as edições feitas no app. Continuar?')) return
+    !confirm('Importar apaga as edições feitas no app. Use "Baixar Excel" antes para guardá-las. Continuar?')) return
   try {
-    const linhas = (await readSheet(arquivo)) as unknown[][]
-    viagem = linhasParaViagem(linhas)
+    const folhas = await lerPlanilha(arquivo)
+    const abas: Abas = Object.fromEntries(folhas.map((f) => [f.sheet, f.data as unknown[][]]))
+    viagem = ehModeloNovo(abas) ? abasParaViagem(abas) : linhasParaViagem(folhas[0].data as unknown[][])
     salvar(viagem)
   } catch (e) {
     erro = e instanceof Error ? e.message : 'Não consegui ler este arquivo.'
@@ -96,6 +101,28 @@ function botaoImportar(rotulo: string, classe: string) {
   const b = h('button', { class: classe, type: 'button' }, rotulo)
   b.addEventListener('click', () => input.click())
   return h('span', {}, b, input)
+}
+
+// ---------- exportação para Excel ----------
+async function baixarExcel(v: Viagem | null) {
+  erro = ''
+  try {
+    const modelo = await (await fetch('./modelo-roteiro.xlsx')).arrayBuffer()
+    const blob = new Blob([await gerarExcel(v, modelo)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const a = h('a', { href: URL.createObjectURL(blob), download: v ? `roteiro-${v.dias[0].data}.xlsx` : 'modelo-roteiro.xlsx' })
+    document.body.append(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(a.href), 10_000)
+    if (v) {
+      for (const d of v.dias) delete d.editado
+      salvar(v)
+      aviso = 'Excel baixado com as edições do app. Ele passa a ser a sua planilha.'
+    }
+  } catch {
+    erro = 'Não consegui gerar o Excel. Verifique a conexão na primeira vez.'
+  }
+  desenhar()
 }
 
 // ---------- compartilhamento por link ----------
@@ -160,16 +187,8 @@ function campo(rotulo: string, controle: HTMLElement) {
   return h('label', { class: 'campo' }, h('span', {}, rotulo), controle)
 }
 
-/** Avisos de horário de funcionamento de um compromisso. */
-function avisosDeHorario(c: Compromisso): string[] {
-  if (c.fechado) return ['Lugar fechado neste dia']
-  if (!c.hora || (!c.abre && !c.fecha)) return []
-  const ini = minutos(c.hora)
-  const fim = ini + (c.duracaoMin ?? 0)
-  const cedo = c.abre && ini < minutos(c.abre)
-  const tarde = c.fecha && fim > minutos(c.fecha)
-  return cedo || tarde ? ['Fora do horário de funcionamento'] : []
-}
+/** Guarda o compromisso original de cada linha do editor, para não perder campos que o editor não mostra. */
+const originais = new WeakMap<Element, Partial<Compromisso>>()
 
 function linhaEdicao(c: Partial<Compromisso>, dataISO: string) {
   const inp = (campo: string, attrs: Record<string, string>) => h('input', { 'data-c': campo, ...attrs })
@@ -179,6 +198,17 @@ function linhaEdicao(c: Partial<Compromisso>, dataISO: string) {
   const trajeto = inp('trajeto', { type: 'number', min: '0', inputmode: 'numeric', value: c.trajetoMin ? String(c.trajetoMin) : '' })
   const fechado = inp('fechado', { type: 'checkbox' })
   fechado.checked = !!c.fechado
+  const pago = inp('pago', { type: 'checkbox' })
+  pago.checked = !!c.pago
+  const sel = (campo: string, opcoes: [string, string][], atual: string) => {
+    const el = h('select', { 'data-c': campo }, ...opcoes.map(([v, t]) => h('option', { value: v }, t)))
+    el.value = atual
+    return el
+  }
+  const ehTransporte = !!c.tipo && TRANSPORTES.has(c.tipo)
+  const tipos: TipoComp[] = ehTransporte ? ['voo', 'trem', 'onibus', 'outro'] : ['passeio', 'restaurante', 'ingresso', 'compras', 'livre']
+  const tipo = sel('tipo', tipos.map((t) => [t, ROTULO_TIPO[t]]), c.tipo ?? 'passeio')
+  const reserva = sel('reserva', [['', '(sem resposta)'], ...(Object.entries(ROTULO_RESERVA) as [string, string][])], c.reserva ?? '')
 
   const estado = h('p', { class: 'ed-estado', role: 'status' })
   const arquivo = h('input', { type: 'file', accept: 'image/*', hidden: '' })
@@ -230,12 +260,18 @@ function linhaEdicao(c: Partial<Compromisso>, dataISO: string) {
       rot('Trajeto (min)', trajeto),
       rot('Abre', abre),
       rot('Fecha', fecha),
+      rot('Tipo', tipo),
+      rot('Reserva', reserva),
+      rot('Código da reserva', inp('codigo', { type: 'text', value: c.codigo ?? '' })),
+      rot('Custo', inp('custo', { type: 'number', min: '0', step: '0.01', inputmode: 'decimal', value: c.custo != null ? String(c.custo) : '' })),
     ),
     h('label', { class: 'ed-check' }, fechado, 'Fechado neste dia'),
+    h('label', { class: 'ed-check' }, pago, 'Já está pago'),
     h('div', {}, print, arquivo),
     estado,
   )
   tirar.addEventListener('click', () => linha.remove())
+  originais.set(linha, c)
   return linha
 }
 
@@ -261,28 +297,35 @@ function editarDia(d: Dia) {
     d.programa = programa.value.trim()
     d.detalhes = detalhes.value.trim()
     d.compromissos = [...linhas.children].flatMap((l) => {
-      const el = (campo: string) => l.querySelector<HTMLInputElement>(`[data-c="${campo}"]`)!
+      const el = (campo: string) => l.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-c="${campo}"]`)!
       const v = (campo: string) => el(campo).value.trim()
+      const marcado = (campo: string) => (el(campo) as HTMLInputElement).checked
       if (!v('titulo')) return []
-      const c: Compromisso = { hora: v('hora') || null, titulo: v('titulo'), local: v('local') || null }
-      if (Number(v('dur')) > 0) c.duracaoMin = Number(v('dur'))
-      if (Number(v('trajeto')) > 0) c.trajetoMin = Number(v('trajeto'))
-      if (el('fechado').checked) c.fechado = true
-      else {
-        if (v('abre')) c.abre = v('abre')
-        if (v('fecha')) c.fecha = v('fecha')
+      // Parte do original e troca só o que o editor mostra.
+      const c = { ...originais.get(l), hora: v('hora') || null, titulo: v('titulo'), local: v('local') || null } as Compromisso
+      const por = <K extends keyof Compromisso>(k: K, valor: Compromisso[K] | undefined) => {
+        if (valor === undefined) delete c[k]
+        else c[k] = valor
       }
+      por('duracaoMin', Number(v('dur')) > 0 ? Number(v('dur')) : undefined)
+      por('trajetoMin', Number(v('trajeto')) > 0 ? Number(v('trajeto')) : undefined)
+      por('fechado', marcado('fechado') || undefined)
+      por('abre', !marcado('fechado') && v('abre') ? v('abre') : undefined)
+      por('fecha', !marcado('fechado') && v('fecha') ? v('fecha') : undefined)
+      por('tipo', v('tipo') as TipoComp)
+      por('reserva', (v('reserva') || undefined) as Reserva | undefined)
+      por('codigo', v('codigo') || undefined)
+      por('custo', v('custo') !== '' ? Number(v('custo')) : undefined)
+      por('pago', marcado('pago') ? true : c.custo != null ? false : undefined)
       return [c]
     })
-    d.pendencias = [...new Set([
-      ...pendenciasDoTexto(d.programa, d.detalhes),
-      ...d.pendencias.filter((p) => p.startsWith('Hotel')),
-      ...d.compromissos.flatMap(avisosDeHorario),
-    ])]
-    const temConteudo = !!(d.programa || d.detalhes)
+    // Mesma ordem da importação: com horário primeiro, em ordem; depois os sem horário.
+    d.compromissos.sort((x, y) => (x.hora ?? '99').localeCompare(y.hora ?? '99'))
+    const temConteudo = !!(d.programa || d.detalhes || d.compromissos.length)
     if (d.tipo === 'livre' && temConteudo) d.tipo = 'passeio'
     if (d.tipo === 'passeio' && !temConteudo) d.tipo = 'livre'
     d.editado = true
+    if (viagem) recalcular(viagem)
     salvar(viagem)
     desenhar()
   })
@@ -292,6 +335,8 @@ function editarDia(d: Dia) {
 
 // ---------- telas ----------
 function telaVazia() {
+  const modelo = h('button', { class: 'btn btn-fantasma', type: 'button' }, 'Baixar modelo vazio')
+  modelo.addEventListener('click', () => void baixarExcel(null))
   const exemplo = h('button', { class: 'btn btn-fantasma', type: 'button' }, 'Ver um exemplo')
   exemplo.addEventListener('click', () => {
     viagem = viagemExemplo()
@@ -302,33 +347,66 @@ function telaVazia() {
     h('h1', {}, 'Sua planilha, dia a dia.'),
     h('p', { class: 'lead' },
       'Importe o arquivo .xlsx do roteiro. Ele é lido neste aparelho e não é enviado a lugar nenhum.'),
-    h('div', { class: 'acoes' }, botaoImportar('Importar planilha', 'btn btn-principal'), exemplo),
+    h('div', { class: 'acoes' }, botaoImportar('Importar planilha', 'btn btn-principal'), modelo, exemplo),
     erro && h('p', { class: 'erro', role: 'alert' }, erro),
-    h('p', { class: 'nota' }, 'Colunas esperadas: Data, Base, Programa, Hotel e Diária.'),
+    h('p', { class: 'nota' }, 'Use o modelo de Excel (abas Dias, Compromissos, Hospedagem e Transporte). A planilha antiga, de uma linha por dia, também é aceita.'),
   )
 }
 
 const hhmmDe = (m: number) => `${p2(Math.floor(m / 60) % 24)}:${p2(m % 60)}`
 const fimDe = (c: Compromisso) => (c.hora && c.duracaoMin ? hhmmDe(minutos(c.hora) + c.duracaoMin) : '')
 
+const ICONE_C: Record<TipoComp, string> = {
+  passeio: '📍', restaurante: '🍽️', ingresso: '🎟️', compras: '🛍️', livre: '🌤️',
+  voo: '✈️', trem: '🚄', onibus: '🚌', outro: '🚐', checkin: '🛏️', checkout: '🧳',
+}
+const dinheiro = (n: number) => n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const textoReserva = (c: Compromisso) =>
+  c.reserva === 'sim' ? `reserva feita${c.codigo ? ` (${c.codigo})` : ''}`
+  : c.reserva === 'nao' ? (c.tipo === 'ingresso' ? 'ingresso não comprado' : 'sem reserva')
+  : c.reserva === 'nao-precisa' ? 'não precisa de reserva'
+  : c.reserva === 'a-decidir' ? 'reserva a decidir'
+  : c.codigo ? `código ${c.codigo}` : ''
+
 const detalhesDe = (c: Compromisso, extra: string) => [
+  c.chegada && `chega ${c.chegada}`,
+  c.numero, c.assento && `assento ${c.assento}`, c.terminal,
   fimDe(c) && `até ${fimDe(c)}`,
   !c.hora && c.duracaoMin && duracao(c.duracaoMin),
   !c.fechado && (c.abre || c.fecha) && `aberto ${c.abre ?? '?'}–${c.fecha ?? '?'}`,
   c.trajetoMin ? `trajeto ${duracao(c.trajetoMin)} (informado)` : extra,
+  textoReserva(c),
+  c.nomeReserva && `em nome de ${c.nomeReserva}`,
+  c.pessoas && `${c.pessoas} pessoas`,
+  c.pagamento,
+  c.custo != null && `${dinheiro(c.custo)}${c.pago ? ' pago' : c.pago === false ? ' a pagar' : ''}`,
+  c.obs,
 ].filter(Boolean).join(' · ')
+
+/** Compromissos do dia mais check-in e check-out, com os que têm horário primeiro e em ordem. */
+function compromissosDoDia(v: Viagem, d: Dia): Compromisso[] {
+  const extras: Compromisso[] = []
+  for (const hs of v.hospedagens ?? []) {
+    const local = [hs.nome, hs.endereco].filter(Boolean).join(', ')
+    if (hs.checkout === d.data) extras.push({ hora: hs.horaCheckout ?? null, titulo: `Check-out: ${hs.nome}`, local, tipo: 'checkout' })
+    if (hs.checkin === d.data) extras.push({ hora: hs.horaCheckin ?? null, titulo: `Check-in: ${hs.nome}`, local, tipo: 'checkin', ...(hs.codigo ? { codigo: hs.codigo } : {}) })
+  }
+  const todos = [...d.compromissos, ...extras]
+  return [...todos.filter((c) => c.hora).sort((a, b) => a.hora!.localeCompare(b.hora!)), ...todos.filter((c) => !c.hora)]
+}
 
 function linhaCompromisso(c: Compromisso, estado = '', extra = '') {
   return h('li', { class: `comp ${estado}` },
     h('span', { class: 'comp-hora' }, c.hora ?? '•'),
-    h('span', { class: 'comp-titulo' }, c.titulo,
+    h('span', { class: 'comp-titulo' }, `${ICONE_C[c.tipo ?? 'passeio']} ${c.titulo}`,
       detalhesDe(c, extra) ? h('small', {}, detalhesDe(c, extra)) : null,
-      ...avisosDeHorario(c).map((a) => h('small', { class: 'alerta' }, a))),
+      ...doCompromisso(c).map((a) => h('small', { class: 'alerta' }, a))),
     c.local && h('a', { href: mapa(c.local), target: '_blank', rel: 'noopener', 'aria-label': `Mapa: ${c.titulo}` }, 'mapa'),
   )
 }
 
-function cartao(d: Dia, hoje: string, cor: string) {
+function cartao(d: Dia, hoje: string, cor: string, v: Viagem) {
+  const lista = compromissosDoDia(v, d)
   const classes = ['dia', `tipo-${d.tipo}`]
   if (d.data === hoje) classes.push('hoje')
   if (d.data < hoje) classes.push('passado')
@@ -346,8 +424,8 @@ function cartao(d: Dia, hoje: string, cor: string) {
     ),
     d.programa && h('p', { class: 'programa' }, d.programa),
     d.detalhes && h('p', { class: 'detalhes' }, d.detalhes),
-    !d.programa && !d.detalhes && h('p', { class: 'vago' }, 'Nada planejado ainda.'),
-    d.compromissos.length > 0 && h('ul', { class: 'comps' }, ...d.compromissos.map((c) => linhaCompromisso(c))),
+    !d.programa && !d.detalhes && !lista.length && h('p', { class: 'vago' }, 'Nada planejado ainda.'),
+    lista.length > 0 && h('ul', { class: 'comps' }, ...lista.map((c) => linhaCompromisso(c))),
   )
 
   if (d.hotel) {
@@ -471,8 +549,9 @@ function painelAgora(v: Viagem) {
     return caixa
   }
 
-  const comHora = d.compromissos.filter((c) => c.hora).sort((a, b) => a.hora!.localeCompare(b.hora!))
-  const semHora = d.compromissos.filter((c) => !c.hora)
+  const doDia = compromissosDoDia(v, d)
+  const comHora = doDia.filter((c) => c.hora)
+  const semHora = doDia.filter((c) => !c.hora)
   // Em dia de voo os horários são locais de cada aeroporto: sem contagem regressiva.
   const voo = d.tipo === 'voo'
   const proximo = voo ? undefined : comHora.find((c) => minutos(c.hora!) >= min)
@@ -506,7 +585,7 @@ function painelAgora(v: Viagem) {
     add(caixa, h('p', { class: 'agora-texto' }, `Trajeto: ${textoTrajeto(tp)}.`))
   }
 
-  const comLocal = d.compromissos.filter((c) => c.local)
+  const comLocal = doDia.filter((c) => c.local)
   if (!pos && comLocal.length) {
     const b = h('button', { class: 'btn', type: 'button' }, 'Estimar trajeto daqui')
     b.addEventListener('click', pedirLocalizacao)
@@ -527,6 +606,45 @@ function painelAgora(v: Viagem) {
   return caixa
 }
 
+// ---------- custos ----------
+function painelCustos(v: Viagem) {
+  type Soma = { total: number; pago: number }
+  const porTipo = new Map<string, Soma>()
+  const porCidade = new Map<string, Soma>()
+  const somar = (m: Map<string, Soma>, chave: string, valor: number, pago: boolean | undefined) => {
+    const s = m.get(chave) ?? m.set(chave, { total: 0, pago: 0 }).get(chave)!
+    s.total += valor
+    if (pago) s.pago += valor
+  }
+  for (const hs of v.hospedagens ?? []) {
+    if (hs.valor == null) continue
+    somar(porTipo, 'Hospedagem', hs.valor, hs.pago)
+    somar(porCidade, hs.cidade || 'Sem cidade', hs.valor, hs.pago)
+  }
+  for (const d of v.dias) {
+    for (const c of d.compromissos) {
+      if (c.custo == null) continue
+      const tipo = c.tipo ?? 'passeio'
+      somar(porTipo, TRANSPORTES.has(tipo) ? 'Transporte' : ROTULO_TIPO[tipo], c.custo, c.pago)
+      somar(porCidade, ehCidade(d.base) ? d.base : 'Em trânsito', c.custo, c.pago)
+    }
+  }
+  if (!porTipo.size) return null
+  const tabela = (titulo: string, m: Map<string, Soma>) => {
+    const total = [...m.values()].reduce((a, s) => ({ total: a.total + s.total, pago: a.pago + s.pago }), { total: 0, pago: 0 })
+    const linha = (nome: string, s: Soma, classe = '') => h('tr', { class: classe },
+      h('th', { scope: 'row' }, nome), h('td', {}, dinheiro(s.total)), h('td', {}, dinheiro(s.pago)), h('td', {}, dinheiro(s.total - s.pago)))
+    return h('table', { class: 'custos' },
+      h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, titulo), h('th', { scope: 'col' }, 'Total'), h('th', { scope: 'col' }, 'Pago'), h('th', { scope: 'col' }, 'A pagar'))),
+      h('tbody', {}, ...[...m.entries()].map(([nome, s]) => linha(nome, s)), linha('Total', total, 'total')))
+  }
+  const geral = [...porTipo.values()].reduce((a, s) => a + s.total, 0)
+  return h('details', { class: 'custos-caixa' },
+    h('summary', {}, `Custos: ${dinheiro(geral)}`),
+    tabela('Por tipo', porTipo), tabela('Por cidade', porCidade),
+    h('p', { class: 'nota' }, 'Valores na moeda em que foram preenchidos. Sem marcação de pago, o valor conta como a pagar.'))
+}
+
 function telaViagem(v: Viagem) {
   const hoje = hojeISO()
   const dias = v.dias
@@ -534,13 +652,23 @@ function telaViagem(v: Viagem) {
   const trajeto = dias.map((d) => d.base).filter(ehCidade).filter((b, i, a) => b !== a[i - 1])
   const bases = trajeto.filter((b, i) => trajeto.indexOf(b) === i)
 
-  const filtro = h('button', {
-    class: 'btn btn-fantasma', type: 'button', 'aria-pressed': String(soPendencias),
-  }, soPendencias ? 'Mostrar todos os dias' : `Só pendências (${pend})`)
-  filtro.addEventListener('click', () => {
-    soPendencias = !soPendencias
-    desenhar()
-  })
+  const tem = (d: Dia, f: Filtro) =>
+    f === 'tudo' ? true
+    : f === 'pendencias' ? d.pendencias.length > 0
+    : f === 'transporte' ? d.compromissos.some((c) => c.tipo && TRANSPORTES.has(c.tipo))
+    : d.compromissos.some((c) => c.tipo === f)
+  const opcoes: [Filtro, string][] = [['tudo', 'Tudo'], ['pendencias', 'Pendências'], ['restaurante', '🍽️ Restaurantes'], ['ingresso', '🎟️ Ingressos'], ['transporte', '🚄 Transporte']]
+  const filtros = h('div', { class: 'filtros', role: 'group', 'aria-label': 'Filtrar dias' },
+    ...opcoes.map(([f, rotulo]) => {
+      const n = dias.filter((d) => tem(d, f)).length
+      const b = h('button', { type: 'button', class: 'btn-mini', 'aria-pressed': String(filtro === f) }, f === 'tudo' ? rotulo : `${rotulo} (${n})`)
+      b.disabled = n === 0
+      b.addEventListener('click', () => { filtro = f; desenhar() })
+      return b
+    }))
+
+  const baixar = h('button', { class: 'btn btn-fantasma', type: 'button' }, 'Baixar Excel')
+  baixar.addEventListener('click', () => void baixarExcel(v))
 
   const enviar = h('button', { class: 'btn btn-fantasma', type: 'button' }, 'Compartilhar')
   enviar.addEventListener('click', () => void compartilhar())
@@ -549,7 +677,7 @@ function telaViagem(v: Viagem) {
   limpar.addEventListener('click', () => {
     if (!confirm('Remover o roteiro deste aparelho?')) return
     viagem = null
-    soPendencias = false
+    filtro = 'tudo'
     salvar(null)
     desenhar()
   })
@@ -557,12 +685,12 @@ function telaViagem(v: Viagem) {
   const lista = h('div', { class: 'lista' })
   let baseAnterior: string | null = null
   for (const d of dias) {
-    if (soPendencias && !d.pendencias.length) continue
+    if (!tem(d, filtro)) continue
     if (d.base !== baseAnterior) {
       lista.append(h('h2', { class: 'base', style: `--cor:${corDe(d.base, bases)}` }, ehCidade(d.base) ? d.base : 'Em trânsito'))
       baseAnterior = d.base
     }
-    lista.append(cartao(d, hoje, corDe(d.base, bases)))
+    lista.append(cartao(d, hoje, corDe(d.base, bases), v))
   }
 
   return h('main', {},
@@ -575,8 +703,8 @@ function telaViagem(v: Viagem) {
         ` · ${dias.length} dias · ${pend} com pendência`),
       h('ol', { class: 'rota' }, ...trajeto.map((b) => h('li', { style: `--cor:${corDe(b, bases)}` }, b))),
       h('div', { class: 'acoes' },
-        pend > 0 && filtro,
         botaoImportar('Trocar planilha', 'btn btn-fantasma'),
+        baixar,
         enviar,
         limpar,
       ),
@@ -584,6 +712,8 @@ function telaViagem(v: Viagem) {
       erro && h('p', { class: 'erro', role: 'alert' }, erro),
     ),
     h('div', { id: 'agora' }, painelAgora(v)),
+    painelCustos(v),
+    filtros,
     lista,
   )
 }

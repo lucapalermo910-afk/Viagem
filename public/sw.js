@@ -1,6 +1,6 @@
 // Guarda o app no aparelho para abrir sem internet.
 // Os dados da viagem ficam no armazenamento do navegador, não aqui.
-const CACHE = 'roteiro-v1'
+const CACHE = 'roteiro-v2'
 
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
@@ -10,7 +10,7 @@ self.addEventListener('install', (e) => {
     // Descobre os arquivos do app (nomes mudam a cada versão) lendo a própria página.
     const arquivos = [...html.matchAll(/(?:src|href)="(\.\/[^"]+)"/g)].map((m) => m[1])
     await cache.put('./', resp)
-    await cache.addAll([...new Set(arquivos)])
+    await cache.addAll([...new Set([...arquivos, './modelo-roteiro.xlsx'])])
     await self.skipWaiting()
   })())
 })
