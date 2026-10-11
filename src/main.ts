@@ -3,6 +3,7 @@ import { readSheet } from 'read-excel-file/browser'
 import { linhasParaViagem } from './parser'
 import { viagemExemplo } from './exemplo'
 import type { Compromisso, Dia, Viagem } from './types'
+import { distanciaKm, estimar, FOLGA_MIN, type Estimativa, type Ponto } from './trajeto'
 
 const CHAVE = 'viagem:v2'
 const app = document.querySelector<HTMLDivElement>('#app')!
@@ -110,10 +111,10 @@ function telaVazia() {
   )
 }
 
-function linhaCompromisso(c: Compromisso, estado = '') {
+function linhaCompromisso(c: Compromisso, estado = '', extra = '') {
   return h('li', { class: `comp ${estado}` },
     h('span', { class: 'comp-hora' }, c.hora ?? '•'),
-    h('span', { class: 'comp-titulo' }, c.titulo),
+    h('span', { class: 'comp-titulo' }, c.titulo, extra && h('small', {}, extra)),
     c.local && h('a', { href: mapa(c.local), target: '_blank', rel: 'noopener', 'aria-label': `Mapa: ${c.titulo}` }, 'mapa'),
   )
 }
@@ -160,6 +161,74 @@ function cartao(d: Dia, hoje: string, cor: string) {
   )
 }
 
+// ---------- localização e trajeto estimado ----------
+const CHAVE_GEO = 'viagem:geo:v1'
+let pos: Ponto | null = null
+let geoErro = ''
+/** Coordenadas por texto de busca; null = não encontrado. */
+const geo: Record<string, Ponto | null> = (() => {
+  try { return JSON.parse(localStorage.getItem(CHAVE_GEO) ?? '{}') } catch { return {} }
+})()
+const fila: string[] = []
+let buscando = false
+
+const redesenharAgora = () => {
+  if (viagem) document.querySelector('#agora')?.replaceChildren(painelAgora(viagem))
+}
+
+function pedirLocalizacao() {
+  if (!('geolocation' in navigator)) {
+    geoErro = 'Este navegador não informa a localização.'
+    return redesenharAgora()
+  }
+  navigator.geolocation.watchPosition(
+    (p) => {
+      pos = { lat: p.coords.latitude, lon: p.coords.longitude }
+      geoErro = ''
+      redesenharAgora()
+    },
+    () => {
+      geoErro = 'Não consegui obter sua localização. Verifique a permissão do navegador.'
+      redesenharAgora()
+    },
+    { enableHighAccuracy: false, maximumAge: 60_000, timeout: 20_000 },
+  )
+}
+
+/** Busca coordenadas dos lugares, um por vez (limite de uso do OpenStreetMap). */
+async function localizarLugares(lugares: string[]) {
+  for (const l of lugares) if (!(l in geo) && !fila.includes(l)) fila.push(l)
+  if (buscando) return
+  buscando = true
+  while (fila.length) {
+    const q = fila.shift()!
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(q)}`)
+      if (!r.ok) throw new Error(String(r.status))
+      const [a] = (await r.json()) as { lat: string; lon: string }[]
+      geo[q] = a ? { lat: Number(a.lat), lon: Number(a.lon) } : null
+      try { localStorage.setItem(CHAVE_GEO, JSON.stringify(geo)) } catch { /* sem cache */ }
+      redesenharAgora()
+    } catch {
+      break // sem internet: tenta de novo na próxima atualização
+    }
+    await new Promise((ok) => setTimeout(ok, 1100))
+  }
+  buscando = false
+}
+
+type Trajeto = Estimativa | 'longe' | 'desconhecido' | 'buscando' | null
+function trajetoAte(c: Compromisso): Trajeto {
+  if (!pos || !c.local) return null
+  if (!(c.local in geo)) return 'buscando'
+  const g = geo[c.local]
+  if (!g) return 'desconhecido'
+  return estimar(distanciaKm(pos, g)) ?? 'longe'
+}
+const textoTrajeto = (t: Trajeto) =>
+  t === null ? '' : t === 'buscando' ? 'localizando…' : t === 'desconhecido' ? 'lugar não localizado'
+  : t === 'longe' ? 'outra cidade' : `≈ ${duracao(t.min)} ${t.modo}`
+
 // ---------- painel "Agora" ----------
 function painelAgora(v: Viagem) {
   const t = agora()
@@ -201,10 +270,33 @@ function painelAgora(v: Viagem) {
     proximo?.local && h('a', { class: 'btn btn-principal', href: rota(proximo.local), target: '_blank', rel: 'noopener' },
       'Ver tempo de trajeto daqui'),
   )
+  // Hora de sair, estimada pela distância em linha reta até o próximo compromisso.
+  const tp = proximo ? trajetoAte(proximo) : null
+  if (proximo && tp && typeof tp === 'object') {
+    const sair = minutos(proximo.hora!) - tp.min - FOLGA_MIN
+    add(caixa, h('p', { class: 'agora-sair' },
+      sair <= min ? 'Saia agora' : `Saia até ${p2(Math.floor(sair / 60))}:${p2(sair % 60)}`,
+      h('small', {}, `Estimativa: ${duracao(tp.min)} ${tp.modo} (${tp.km.toFixed(1).replace('.', ',')} km) mais ${FOLGA_MIN} min de folga. Confirme no Maps.`),
+    ))
+  } else if (proximo && tp) {
+    add(caixa, h('p', { class: 'agora-texto' }, `Trajeto: ${textoTrajeto(tp)}.`))
+  }
+
+  const comLocal = d.compromissos.filter((c) => c.local)
+  if (!pos && comLocal.length) {
+    const b = h('button', { class: 'btn', type: 'button' }, 'Estimar trajeto daqui')
+    b.addEventListener('click', pedirLocalizacao)
+    add(caixa, b, geoErro && h('p', { class: 'erro', role: 'alert' }, geoErro))
+  }
+  if (pos) void localizarLugares(comLocal.map((c) => c.local!))
+
   if (comHora.length || semHora.length) {
     add(caixa, h('ul', { class: 'comps' },
-      ...comHora.map((c) => linhaCompromisso(c, c === proximo ? 'proximo' : minutos(c.hora!) < min ? 'feito' : '')),
-      ...semHora.map((c) => linhaCompromisso(c)),
+      ...comHora.map((c) => {
+        const passou = minutos(c.hora!) < min
+        return linhaCompromisso(c, c === proximo ? 'proximo' : passou ? 'feito' : '', passou ? '' : textoTrajeto(trajetoAte(c)))
+      }),
+      ...semHora.map((c) => linhaCompromisso(c, '', textoTrajeto(trajetoAte(c)))),
     ))
   }
   if (d.hotel) add(caixa, h('p', { class: 'agora-texto' }, `🛏️ Hoje você dorme em ${d.hotel.nome}.`))
@@ -273,6 +365,4 @@ function desenhar() {
 
 desenhar()
 // Mantém o painel "Agora" em dia com o relógio.
-setInterval(() => {
-  if (viagem) document.querySelector('#agora')?.replaceChildren(painelAgora(viagem))
-}, 30_000)
+setInterval(redesenharAgora, 30_000)

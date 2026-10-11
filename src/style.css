@@ -82,3 +82,7 @@ h1 { font-size: clamp(1.5rem, 5.5vw, 2.1rem); line-height: 1.15; margin: 4px 0 8
 .endereco { color: var(--suave); overflow-wrap: anywhere; }
 .links { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 2px; }
 .links a { color: var(--acento); font-weight: 700; padding: 6px 0; }
+
+.comp-titulo small { display: block; font-size: 0.8rem; font-weight: 600; color: var(--suave); }
+.agora-sair { margin: 12px 0 0; padding: 12px 14px; border-radius: 16px; background: #fff; font-size: 1.3rem; font-weight: 800; color: #a8401f; }
+.agora-sair small { display: block; margin-top: 2px; font-size: 0.8rem; font-weight: 600; color: var(--suave); }
