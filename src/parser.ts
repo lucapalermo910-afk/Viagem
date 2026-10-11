@@ -1,4 +1,4 @@
-import type { Dia, Hotel, TipoDia, Viagem } from './types'
+import type { Compromisso, Dia, Hotel, TipoDia, Viagem } from './types'
 
 type Celula = unknown
 type Linha = Celula[]
@@ -33,6 +33,49 @@ function classificar(base: string, programa: string, conteudo: string): TipoDia 
   // Setas na coluna de detalhes costumam ser roteiros a pé, não troca de cidade.
   if (/→|>>/.test(programa)) return 'deslocamento'
   return 'passeio'
+}
+
+const RE_VOO = /([A-Z]{3}) (\d{1,2}:\d{2})[^>\n]*>\s*([A-Z]{3}) (\d{1,2}:\d{2})/
+// Aceita 16h, 16H30, 13h50 e 01:35; não aceita números soltos como "8 Hirooka".
+const RE_HORA = /\b(\d{1,2})(?:[hH](\d{2})?|:(\d{2}))(?!\w)/
+const hhmm = (h: string, m = '00') => `${h.padStart(2, '0')}:${m}`
+
+/** Extrai compromissos com horário e paradas sem horário do texto livre do dia. */
+export function extrairCompromissos(
+  programa: string, detalhes: string, tipo: TipoDia, base: string,
+): Compromisso[] {
+  const comHora: Compromisso[] = []
+  const local = detalhes.match(/^local:\s*(.+)$/im)?.[1].trim() ?? null
+
+  for (const linha of [programa, detalhes].join('\n').split('\n').map((l) => l.trim())) {
+    const voo = linha.match(RE_VOO)
+    if (voo) {
+      const [h1, m1] = voo[2].split(':')
+      const [h2, m2] = voo[4].split(':')
+      comHora.push({ hora: hhmm(h1, m1), titulo: `Decolagem de ${voo[1]}`, local: `Aeroporto ${voo[1]}` })
+      comHora.push({ hora: hhmm(h2, m2), titulo: `Pouso em ${voo[3]}`, local: null })
+      continue
+    }
+    const t = linha.match(RE_HORA)
+    if (t && Number(t[1]) <= 23) {
+      const generica = /^hor[aá]rio/i.test(linha)
+      // Tira os horários do título: "MIRANTE 16H OU 16H30" vira "MIRANTE".
+      const limpo = linha.replace(new RegExp(RE_HORA, 'g'), '').replace(/(\s*\bou\b\s*)+$/i, '').trim()
+      comHora.push({
+        hora: hhmm(t[1], t[2] ?? t[3] ?? '00'),
+        titulo: generica && programa ? `Partida: ${programa}` : limpo || linha,
+        local: generica ? local : `${limpo || linha}, ${base}`,
+      })
+    }
+  }
+
+  const paradas: Compromisso[] =
+    tipo === 'passeio' && !programa.includes('?')
+      ? programa.split(/[,;→]/).map((p) => p.trim()).filter(Boolean)
+          .map((p) => ({ hora: null, titulo: p, local: `${p}, ${base}` }))
+      : []
+
+  return [...comHora, ...paradas]
 }
 
 /**
@@ -78,10 +121,10 @@ export function linhasParaViagem(linhas: Linha[]): Viagem {
     else if (/\?|\bou\b/i.test(conteudo)) pendencias.push('Decisão em aberto')
     if (hotelNovo && !hotelNovo.endereco) pendencias.push('Hotel sem endereço')
 
+    const tipo = classificar(base, programa, conteudo)
     dias.push({
-      data, base, programa, detalhes, hotel, diaria,
-      tipo: classificar(base, programa, conteudo),
-      pendencias,
+      data, base, programa, detalhes, hotel, diaria, tipo, pendencias,
+      compromissos: extrairCompromissos(programa, detalhes, tipo, base),
     })
   }
 

@@ -2,9 +2,9 @@ import './style.css'
 import { readSheet } from 'read-excel-file/browser'
 import { linhasParaViagem } from './parser'
 import { viagemExemplo } from './exemplo'
-import type { Dia, Viagem } from './types'
+import type { Compromisso, Dia, Viagem } from './types'
 
-const CHAVE = 'viagem:v1'
+const CHAVE = 'viagem:v2'
 const app = document.querySelector<HTMLDivElement>('#app')!
 
 let viagem: Viagem | null = carregar()
@@ -42,18 +42,34 @@ function h<K extends keyof HTMLElementTagNameMap>(
   return el
 }
 
+const add = (el: HTMLElement, ...filhos: Filho[]) => {
+  for (const f of filhos) if (f) el.append(f)
+}
+
 const utc = (iso: string) => new Date(iso + 'T00:00:00Z')
 const fmt = (iso: string, o: Intl.DateTimeFormatOptions) =>
   new Intl.DateTimeFormat('pt-BR', { timeZone: 'UTC', ...o }).format(utc(iso)).replace('.', '')
-const hojeISO = () => {
-  const d = new Date()
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+const p2 = (n: number) => String(n).padStart(2, '0')
+/** Relógio do aparelho. Para testar: acrescente ?agora=2026-10-19T14:00 ao endereço. */
+function agora(): Date {
+  const sim = new URLSearchParams(location.search).get('agora')
+  const d = sim ? new Date(sim) : new Date()
+  return isNaN(d.getTime()) ? new Date() : d
 }
+const isoDe = (d: Date) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`
+const hojeISO = () => isoDe(agora())
+const minutos = (hora: string) => Number(hora.slice(0, 2)) * 60 + Number(hora.slice(3))
+const duracao = (min: number) =>
+  min < 60 ? `${min} min` : `${Math.floor(min / 60)}h${min % 60 ? p2(min % 60) : ''}`
+const rota = (q: string) =>
+  `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(q)}&travelmode=transit`
+const CORES = ['#e4572e', '#2e86ab', '#3f9b6b', '#8e5bd0', '#d18b00', '#d6457a']
+const corDe = (base: string, bases: string[]) => CORES[Math.max(0, bases.indexOf(base)) % CORES.length]
+const ICONE = { voo: '✈️', deslocamento: '🚄', passeio: '📍', livre: '🌤️' } as const
 const ehCidade = (base: string) => !!base && base !== '—' && !/voando/i.test(base)
 const mapa = (q: string) => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`
 
-const ROTULO = { voo: 'Voo', deslocamento: 'Deslocamento', passeio: 'Passeio', livre: 'Em aberto' } as const
+const ROTULO = { voo: 'Voo', deslocamento: 'Deslocamento', passeio: 'Passeio', livre: 'Dia livre' } as const
 
 // ---------- importação ----------
 async function importar(arquivo: File) {
@@ -94,27 +110,36 @@ function telaVazia() {
   )
 }
 
-function cartao(d: Dia, hoje: string) {
+function linhaCompromisso(c: Compromisso, estado = '') {
+  return h('li', { class: `comp ${estado}` },
+    h('span', { class: 'comp-hora' }, c.hora ?? '•'),
+    h('span', { class: 'comp-titulo' }, c.titulo),
+    c.local && h('a', { href: mapa(c.local), target: '_blank', rel: 'noopener', 'aria-label': `Mapa: ${c.titulo}` }, 'mapa'),
+  )
+}
+
+function cartao(d: Dia, hoje: string, cor: string) {
   const classes = ['dia', `tipo-${d.tipo}`]
   if (d.data === hoje) classes.push('hoje')
   if (d.data < hoje) classes.push('passado')
 
   const corpo = h('div', { class: 'corpo' },
     h('div', { class: 'linha-topo' },
-      h('span', { class: 'chip' }, ROTULO[d.tipo]),
+      h('span', { class: 'chip chip-tipo' }, `${ICONE[d.tipo]} ${ROTULO[d.tipo]}`),
       d.data === hoje && h('span', { class: 'chip chip-hoje' }, 'Hoje'),
       ...d.pendencias.map((p) => h('span', { class: 'chip chip-pend' }, p)),
     ),
     d.programa && h('p', { class: 'programa' }, d.programa),
     d.detalhes && h('p', { class: 'detalhes' }, d.detalhes),
-    !d.programa && !d.detalhes && h('p', { class: 'vago' }, 'Nada planejado para este dia.'),
+    !d.programa && !d.detalhes && h('p', { class: 'vago' }, 'Nada planejado ainda.'),
+    d.compromissos.length > 0 && h('ul', { class: 'comps' }, ...d.compromissos.map((c) => linhaCompromisso(c))),
   )
 
   if (d.hotel) {
     const alvo = [d.hotel.nome, d.hotel.endereco].filter(Boolean).join(', ')
     corpo.append(
       h('div', { class: 'hotel' },
-        h('span', { class: 'hotel-rotulo' }, 'Dorme em'),
+        h('span', { class: 'hotel-rotulo' }, '🛏️ Dorme em'),
         h('strong', {}, d.hotel.nome),
         d.hotel.endereco && h('span', { class: 'endereco' }, d.hotel.endereco),
         h('span', { class: 'links' },
@@ -125,7 +150,7 @@ function cartao(d: Dia, hoje: string) {
     )
   }
 
-  return h('article', { class: classes.join(' '), id: `dia-${d.data}` },
+  return h('article', { class: classes.join(' '), id: `dia-${d.data}`, style: `--cor:${cor}` },
     h('div', { class: 'quando' },
       h('span', { class: 'num' }, fmt(d.data, { day: '2-digit' })),
       h('span', { class: 'sem' }, fmt(d.data, { weekday: 'short' })),
@@ -135,11 +160,63 @@ function cartao(d: Dia, hoje: string) {
   )
 }
 
+// ---------- painel "Agora" ----------
+function painelAgora(v: Viagem) {
+  const t = agora()
+  const hoje = isoDe(t)
+  const min = t.getHours() * 60 + t.getMinutes()
+  const dias = v.dias
+  const caixa = h('section', { class: 'agora', 'aria-live': 'polite' })
+  const relogio = `${p2(t.getHours())}:${p2(t.getMinutes())}`
+
+  if (hoje < dias[0].data) {
+    const falta = Math.round((utc(dias[0].data).getTime() - utc(hoje).getTime()) / 86400000)
+    const primeiro = dias[0].compromissos.find((c) => c.hora)
+    add(caixa, 
+      h('p', { class: 'agora-rotulo' }, 'Contagem regressiva'),
+      h('p', { class: 'agora-grande' }, falta === 1 ? 'Falta 1 dia' : `Faltam ${falta} dias`),
+      primeiro && h('p', { class: 'agora-texto' },
+        `Começa ${fmt(dias[0].data, { weekday: 'long', day: 'numeric', month: 'long' })}, às ${primeiro.hora}: ${primeiro.titulo}.`),
+      primeiro && primeiro.hora! < '05:00' && h('p', { class: 'agora-aviso' },
+        'É de madrugada: você sai de casa na noite anterior.'),
+    )
+    return caixa
+  }
+  const d = dias.find((x) => x.data === hoje)
+  if (!d) {
+    add(caixa, h('p', { class: 'agora-rotulo' }, 'Viagem concluída'), h('p', { class: 'agora-grande' }, 'Boas lembranças!'))
+    return caixa
+  }
+
+  const comHora = d.compromissos.filter((c) => c.hora).sort((a, b) => a.hora!.localeCompare(b.hora!))
+  const semHora = d.compromissos.filter((c) => !c.hora)
+  const proximo = comHora.find((c) => minutos(c.hora!) >= min)
+
+  add(caixa, 
+    h('p', { class: 'agora-rotulo' }, `Hoje · ${ehCidade(d.base) ? d.base : 'em trânsito'} · ${relogio}`),
+    proximo
+      ? h('p', { class: 'agora-grande' }, `${proximo.titulo} em ${duracao(minutos(proximo.hora!) - min)}`)
+      : h('p', { class: 'agora-grande' }, comHora.length ? 'Sem mais horários marcados hoje' : 'Dia sem horário marcado'),
+    proximo && h('p', { class: 'agora-texto' }, `Marcado para ${proximo.hora}.`),
+    proximo?.local && h('a', { class: 'btn btn-principal', href: rota(proximo.local), target: '_blank', rel: 'noopener' },
+      'Ver tempo de trajeto daqui'),
+  )
+  if (comHora.length || semHora.length) {
+    add(caixa, h('ul', { class: 'comps' },
+      ...comHora.map((c) => linhaCompromisso(c, c === proximo ? 'proximo' : minutos(c.hora!) < min ? 'feito' : '')),
+      ...semHora.map((c) => linhaCompromisso(c)),
+    ))
+  }
+  if (d.hotel) add(caixa, h('p', { class: 'agora-texto' }, `🛏️ Hoje você dorme em ${d.hotel.nome}.`))
+  return caixa
+}
+
 function telaViagem(v: Viagem) {
   const hoje = hojeISO()
   const dias = v.dias
   const pend = dias.filter((d) => d.pendencias.length).length
-  const rota = dias.map((d) => d.base).filter(ehCidade).filter((b, i, a) => b !== a[i - 1])
+  const trajeto = dias.map((d) => d.base).filter(ehCidade).filter((b, i, a) => b !== a[i - 1])
+  const bases = trajeto.filter((b, i) => trajeto.indexOf(b) === i)
 
   const filtro = h('button', {
     class: 'btn btn-fantasma', type: 'button', 'aria-pressed': String(soPendencias),
@@ -163,21 +240,21 @@ function telaViagem(v: Viagem) {
   for (const d of dias) {
     if (soPendencias && !d.pendencias.length) continue
     if (d.base !== baseAnterior) {
-      lista.append(h('h2', { class: 'base' }, ehCidade(d.base) ? d.base : 'Em trânsito'))
+      lista.append(h('h2', { class: 'base', style: `--cor:${corDe(d.base, bases)}` }, ehCidade(d.base) ? d.base : 'Em trânsito'))
       baseAnterior = d.base
     }
-    lista.append(cartao(d, hoje))
+    lista.append(cartao(d, hoje, corDe(d.base, bases)))
   }
 
   return h('main', {},
     h('header', { class: 'topo' },
       h('p', { class: 'sobre' }, 'Roteiro de viagem'),
-      h('h1', {}, rota.filter((b, i) => rota.indexOf(b) === i).join(' · ') || 'Minha viagem'),
+      h('h1', {}, bases.join(' · ') || 'Minha viagem'),
       h('p', { class: 'lead' },
         `${fmt(dias[0].data, { day: 'numeric', month: 'short' })} a ` +
         `${fmt(dias[dias.length - 1].data, { day: 'numeric', month: 'short', year: 'numeric' })}` +
         ` · ${dias.length} dias · ${pend} com pendência`),
-      h('ol', { class: 'rota' }, ...rota.map((b) => h('li', {}, b))),
+      h('ol', { class: 'rota' }, ...trajeto.map((b) => h('li', { style: `--cor:${corDe(b, bases)}` }, b))),
       h('div', { class: 'acoes' },
         pend > 0 && filtro,
         botaoImportar('Trocar planilha', 'btn btn-fantasma'),
@@ -185,6 +262,7 @@ function telaViagem(v: Viagem) {
       ),
       erro && h('p', { class: 'erro', role: 'alert' }, erro),
     ),
+    h('div', { id: 'agora' }, painelAgora(v)),
     lista,
   )
 }
@@ -194,4 +272,7 @@ function desenhar() {
 }
 
 desenhar()
-document.querySelector('.dia.hoje')?.scrollIntoView({ block: 'center' })
+// Mantém o painel "Agora" em dia com o relógio.
+setInterval(() => {
+  if (viagem) document.querySelector('#agora')?.replaceChildren(painelAgora(viagem))
+}, 30_000)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { lerHotel, linhasParaViagem } from './parser'
+import { extrairCompromissos, lerHotel, linhasParaViagem } from './parser'
 
 const d = (s: string) => new Date(s + 'T00:00:00Z')
 const CAB = ['Data', null, 'Base', 'Programa', null, 'Hotel', 'Diária']
@@ -59,5 +59,27 @@ describe('lerHotel', () => {
   })
   it('devolve null para célula vazia', () => {
     expect(lerHotel(null)).toBeNull()
+  })
+})
+
+describe('extrairCompromissos', () => {
+  it('lê decolagem e pouso de cada trecho de voo', () => {
+    const c = extrairCompromissos('AAA 00:05 Terminal 3 > BBB 06:55 Terminal 3\nBBB 09:05 > CCC 17:35', '', 'voo', '—')
+    expect(c.map((x) => `${x.hora} ${x.titulo}`)).toEqual([
+      '00:05 Decolagem de AAA', '06:55 Pouso em BBB', '09:05 Decolagem de BBB', '17:35 Pouso em CCC',
+    ])
+  })
+  it('reconhece 16H, 16H30 e 13h50 e ignora números de endereço', () => {
+    const c = extrairCompromissos('A → B', 'Guia (R$739,74)\nHorário de partida: 13h50\nLocal: 1 Chome-8 Hirooka, 920-0031', 'deslocamento', 'X')
+    expect(c).toEqual([{ hora: '13:50', titulo: 'Partida: A → B', local: '1 Chome-8 Hirooka, 920-0031' }])
+    expect(extrairCompromissos('', 'MIRANTE 16H OU 16H30', 'passeio', 'X')[0]).toEqual({ hora: '16:00', titulo: 'MIRANTE', local: 'MIRANTE, X' })
+  })
+  it('separa as paradas de um dia de passeio', () => {
+    const c = extrairCompromissos('Jardim, castelo; Mercado', '', 'passeio', 'Cidade')
+    expect(c.map((x) => x.titulo)).toEqual(['Jardim', 'castelo', 'Mercado'])
+    expect(c[0]).toEqual({ hora: null, titulo: 'Jardim', local: 'Jardim, Cidade' })
+  })
+  it('não inventa paradas quando o dia ainda é uma dúvida', () => {
+    expect(extrairCompromissos('Sintra ou Cascais?', '', 'passeio', 'X')).toEqual([])
   })
 })

@@ -6,6 +6,14 @@ export interface Hotel {
   link: string | null
 }
 
+export interface Compromisso {
+  /** HH:MM no horário local do lugar; null quando a planilha não informa */
+  hora: string | null
+  titulo: string
+  /** Texto de busca para o mapa */
+  local: string | null
+}
+
 export interface Dia {
   /** Data no formato AAAA-MM-DD */
   data: string
@@ -17,6 +25,7 @@ export interface Dia {
   diaria: number | null
   tipo: TipoDia
   pendencias: string[]
+  compromissos: Compromisso[]
 }
 
 export interface Viagem {
