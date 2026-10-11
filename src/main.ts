@@ -1,6 +1,6 @@
 import './style.css'
 import { readSheet } from 'read-excel-file/browser'
-import { linhasParaViagem } from './parser'
+import { linhasParaViagem, pendenciasDoTexto } from './parser'
 import { viagemExemplo } from './exemplo'
 import type { Compromisso, Dia, Viagem } from './types'
 import { distanciaKm, estimar, FOLGA_MIN, type Estimativa, type Ponto } from './trajeto'
@@ -11,6 +11,7 @@ const app = document.querySelector<HTMLDivElement>('#app')!
 let viagem: Viagem | null = carregar()
 let soPendencias = false
 let erro = ''
+let aviso = ''
 
 // ---------- armazenamento (somente neste aparelho) ----------
 function carregar(): Viagem | null {
@@ -75,6 +76,8 @@ const ROTULO = { voo: 'Voo', deslocamento: 'Deslocamento', passeio: 'Passeio', l
 // ---------- importação ----------
 async function importar(arquivo: File) {
   erro = ''
+  if (viagem?.dias.some((d) => d.editado) &&
+    !confirm('Importar a planilha apaga as edições feitas no app. Continuar?')) return
   try {
     const linhas = (await readSheet(arquivo)) as unknown[][]
     viagem = linhasParaViagem(linhas)
@@ -91,6 +94,119 @@ function botaoImportar(rotulo: string, classe: string) {
   const b = h('button', { class: classe, type: 'button' }, rotulo)
   b.addEventListener('click', () => input.click())
   return h('span', {}, b, input)
+}
+
+// ---------- compartilhamento por link ----------
+const b64url = (bytes: Uint8Array) => {
+  let bin = ''
+  for (const b of bytes) bin += String.fromCharCode(b)
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+const deB64url = (s: string) =>
+  Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0))
+const transformar = async (bytes: Uint8Array, t: CompressionStream | DecompressionStream) =>
+  new Uint8Array(await new Response(new Blob([bytes as BlobPart]).stream().pipeThrough(t)).arrayBuffer())
+
+/** O roteiro vai inteiro dentro do link (após o #), sem passar por servidor. */
+export async function linkDaViagem(v: Viagem): Promise<string> {
+  const gz = await transformar(new TextEncoder().encode(JSON.stringify(v)), new CompressionStream('gzip'))
+  return `${location.origin}${location.pathname}#v=${b64url(gz)}`
+}
+async function viagemDoLink(codigo: string): Promise<Viagem> {
+  const json = new TextDecoder().decode(await transformar(deB64url(codigo), new DecompressionStream('gzip')))
+  const v = JSON.parse(json) as Viagem
+  if (!Array.isArray(v?.dias) || !v.dias.length || v.dias.some((d) => typeof d?.data !== 'string' || !Array.isArray(d.compromissos))) {
+    throw new Error('formato')
+  }
+  return v
+}
+
+async function compartilhar() {
+  if (!viagem) return
+  if (!confirm('Quem receber o link vê o roteiro inteiro, inclusive códigos de reserva. Continuar?')) return
+  const url = await linkDaViagem(viagem)
+  try {
+    if (navigator.share) await navigator.share({ title: 'Roteiro de viagem', url })
+    else {
+      await navigator.clipboard.writeText(url)
+      aviso = 'Link copiado. Cole na conversa com quem viaja com você.'
+    }
+  } catch {
+    aviso = '' // compartilhamento cancelado
+  }
+  desenhar()
+}
+
+async function abrirLinkCompartilhado() {
+  if (!location.hash.startsWith('#v=')) return
+  const codigo = location.hash.slice(3)
+  history.replaceState(null, '', location.pathname + location.search)
+  try {
+    const recebida = await viagemDoLink(codigo)
+    if (viagem && !confirm('Abrir o roteiro recebido? Ele substitui o que está neste aparelho.')) return
+    viagem = recebida
+    salvar(viagem)
+    aviso = 'Roteiro recebido e guardado neste aparelho.'
+  } catch {
+    erro = 'Este link de roteiro está incompleto ou corrompido.'
+  }
+  desenhar()
+}
+
+// ---------- edição no app ----------
+function campo(rotulo: string, controle: HTMLElement) {
+  return h('label', { class: 'campo' }, h('span', {}, rotulo), controle)
+}
+
+function linhaEdicao(c: Partial<Compromisso>) {
+  const hora = h('input', { type: 'time', value: c.hora ?? '', 'aria-label': 'Horário' })
+  const titulo = h('input', { type: 'text', value: c.titulo ?? '', placeholder: 'O quê', 'aria-label': 'Compromisso' })
+  const dur = h('input', { type: 'number', min: '0', step: '5', inputmode: 'numeric', placeholder: 'min', 'aria-label': 'Duração em minutos', value: c.duracaoMin ? String(c.duracaoMin) : '' })
+  const local = h('input', { type: 'text', value: c.local ?? '', placeholder: 'Local para o mapa (opcional)', 'aria-label': 'Local' })
+  const tirar = h('button', { type: 'button', class: 'btn-mini', 'aria-label': 'Remover compromisso' }, '✕')
+  const linha = h('div', { class: 'ed-linha' }, hora, titulo, dur, tirar, local)
+  tirar.addEventListener('click', () => linha.remove())
+  return linha
+}
+
+function editarDia(d: Dia) {
+  const programa = h('textarea', { rows: '2' }, d.programa)
+  const detalhes = h('textarea', { rows: '4' }, d.detalhes)
+  const linhas = h('div', { class: 'ed-linhas' }, ...d.compromissos.map(linhaEdicao))
+  const mais = h('button', { type: 'button', class: 'btn' }, '+ Compromisso')
+  mais.addEventListener('click', () => linhas.append(linhaEdicao({})))
+  const cancelar = h('button', { type: 'button', class: 'btn' }, 'Cancelar')
+  const form = h('form', { method: 'dialog' },
+    h('h2', {}, `${fmt(d.data, { weekday: 'long', day: 'numeric', month: 'long' })}`),
+    campo('Programa', programa),
+    campo('Detalhes e reservas', detalhes),
+    h('p', { class: 'ed-titulo' }, 'Compromissos (horário, descrição, duração em minutos)'),
+    linhas, mais,
+    h('div', { class: 'acoes' }, h('button', { type: 'submit', class: 'btn btn-principal' }, 'Salvar'), cancelar),
+  )
+  const dlg = h('dialog', { class: 'editor' }, form)
+  cancelar.addEventListener('click', () => dlg.close())
+  dlg.addEventListener('close', () => dlg.remove())
+  form.addEventListener('submit', () => {
+    d.programa = programa.value.trim()
+    d.detalhes = detalhes.value.trim()
+    d.compromissos = [...linhas.children].flatMap((l) => {
+      const [hora, titulo, dur, local] = [...l.querySelectorAll('input')].map((i) => i.value.trim())
+      if (!titulo) return []
+      const c: Compromisso = { hora: hora || null, titulo, local: local || null }
+      if (Number(dur) > 0) c.duracaoMin = Number(dur)
+      return [c]
+    })
+    d.pendencias = [...pendenciasDoTexto(d.programa, d.detalhes), ...d.pendencias.filter((p) => p.startsWith('Hotel'))]
+    const temConteudo = !!(d.programa || d.detalhes)
+    if (d.tipo === 'livre' && temConteudo) d.tipo = 'passeio'
+    if (d.tipo === 'passeio' && !temConteudo) d.tipo = 'livre'
+    d.editado = true
+    salvar(viagem)
+    desenhar()
+  })
+  document.body.append(dlg)
+  dlg.showModal()
 }
 
 // ---------- telas ----------
@@ -111,10 +227,16 @@ function telaVazia() {
   )
 }
 
+const hhmmDe = (m: number) => `${p2(Math.floor(m / 60) % 24)}:${p2(m % 60)}`
+const fimDe = (c: Compromisso) => (c.hora && c.duracaoMin ? hhmmDe(minutos(c.hora) + c.duracaoMin) : '')
+
 function linhaCompromisso(c: Compromisso, estado = '', extra = '') {
   return h('li', { class: `comp ${estado}` },
     h('span', { class: 'comp-hora' }, c.hora ?? '•'),
-    h('span', { class: 'comp-titulo' }, c.titulo, extra && h('small', {}, extra)),
+    h('span', { class: 'comp-titulo' }, c.titulo,
+      extra || c.duracaoMin
+        ? h('small', {}, [fimDe(c) && `até ${fimDe(c)}`, !c.hora && c.duracaoMin && duracao(c.duracaoMin), extra].filter(Boolean).join(' · '))
+        : null),
     c.local && h('a', { href: mapa(c.local), target: '_blank', rel: 'noopener', 'aria-label': `Mapa: ${c.titulo}` }, 'mapa'),
   )
 }
@@ -124,11 +246,16 @@ function cartao(d: Dia, hoje: string, cor: string) {
   if (d.data === hoje) classes.push('hoje')
   if (d.data < hoje) classes.push('passado')
 
+  const editar = h('button', { type: 'button', class: 'btn-mini editar', 'aria-label': `Editar ${fmt(d.data, { day: 'numeric', month: 'long' })}` }, 'Editar')
+  editar.addEventListener('click', () => editarDia(d))
+
   const corpo = h('div', { class: 'corpo' },
     h('div', { class: 'linha-topo' },
       h('span', { class: 'chip chip-tipo' }, `${ICONE[d.tipo]} ${ROTULO[d.tipo]}`),
       d.data === hoje && h('span', { class: 'chip chip-hoje' }, 'Hoje'),
       ...d.pendencias.map((p) => h('span', { class: 'chip chip-pend' }, p)),
+      d.editado && h('span', { class: 'chip' }, 'Editado'),
+      editar,
     ),
     d.programa && h('p', { class: 'programa' }, d.programa),
     d.detalhes && h('p', { class: 'detalhes' }, d.detalhes),
@@ -145,7 +272,7 @@ function cartao(d: Dia, hoje: string, cor: string) {
         d.hotel.endereco && h('span', { class: 'endereco' }, d.hotel.endereco),
         h('span', { class: 'links' },
           h('a', { href: mapa(alvo), target: '_blank', rel: 'noopener' }, 'Abrir no mapa'),
-          d.hotel.link && h('a', { href: d.hotel.link, target: '_blank', rel: 'noopener' }, 'Ver reserva'),
+          d.hotel.link && /^https?:\/\//i.test(d.hotel.link) && h('a', { href: d.hotel.link, target: '_blank', rel: 'noopener' }, 'Ver reserva'),
         ),
       ),
     )
@@ -259,13 +386,19 @@ function painelAgora(v: Viagem) {
 
   const comHora = d.compromissos.filter((c) => c.hora).sort((a, b) => a.hora!.localeCompare(b.hora!))
   const semHora = d.compromissos.filter((c) => !c.hora)
-  const proximo = comHora.find((c) => minutos(c.hora!) >= min)
+  // Em dia de voo os horários são locais de cada aeroporto: sem contagem regressiva.
+  const voo = d.tipo === 'voo'
+  const proximo = voo ? undefined : comHora.find((c) => minutos(c.hora!) >= min)
+  const emCurso = voo ? undefined : comHora.find((c) =>
+    c.duracaoMin && minutos(c.hora!) <= min && min < minutos(c.hora!) + c.duracaoMin)
 
   add(caixa, 
     h('p', { class: 'agora-rotulo' }, `Hoje · ${ehCidade(d.base) ? d.base : 'em trânsito'} · ${relogio}`),
     proximo
       ? h('p', { class: 'agora-grande' }, `${proximo.titulo} em ${duracao(minutos(proximo.hora!) - min)}`)
-      : h('p', { class: 'agora-grande' }, comHora.length ? 'Sem mais horários marcados hoje' : 'Dia sem horário marcado'),
+      : h('p', { class: 'agora-grande' }, voo ? 'Dia de voo' : comHora.length ? 'Sem mais horários marcados hoje' : 'Dia sem horário marcado'),
+    voo && h('p', { class: 'agora-texto' }, 'Cada horário está no fuso do próprio aeroporto; confira no cartão de embarque.'),
+    emCurso && h('p', { class: 'agora-texto' }, `Agora: ${emCurso.titulo}, até ${fimDe(emCurso)}.`),
     proximo && h('p', { class: 'agora-texto' }, `Marcado para ${proximo.hora}.`),
     proximo?.local && h('a', { class: 'btn btn-principal', href: rota(proximo.local), target: '_blank', rel: 'noopener' },
       'Ver tempo de trajeto daqui'),
@@ -293,7 +426,7 @@ function painelAgora(v: Viagem) {
   if (comHora.length || semHora.length) {
     add(caixa, h('ul', { class: 'comps' },
       ...comHora.map((c) => {
-        const passou = minutos(c.hora!) < min
+        const passou = !voo && minutos(c.hora!) + (c.duracaoMin ?? 0) < min
         return linhaCompromisso(c, c === proximo ? 'proximo' : passou ? 'feito' : '', passou ? '' : textoTrajeto(trajetoAte(c)))
       }),
       ...semHora.map((c) => linhaCompromisso(c, '', textoTrajeto(trajetoAte(c)))),
@@ -317,6 +450,9 @@ function telaViagem(v: Viagem) {
     soPendencias = !soPendencias
     desenhar()
   })
+
+  const enviar = h('button', { class: 'btn btn-fantasma', type: 'button' }, 'Compartilhar')
+  enviar.addEventListener('click', () => void compartilhar())
 
   const limpar = h('button', { class: 'btn btn-fantasma', type: 'button' }, 'Remover dados')
   limpar.addEventListener('click', () => {
@@ -350,8 +486,10 @@ function telaViagem(v: Viagem) {
       h('div', { class: 'acoes' },
         pend > 0 && filtro,
         botaoImportar('Trocar planilha', 'btn btn-fantasma'),
+        enviar,
         limpar,
       ),
+      aviso && h('p', { class: 'aviso', role: 'status' }, aviso),
       erro && h('p', { class: 'erro', role: 'alert' }, erro),
     ),
     h('div', { id: 'agora' }, painelAgora(v)),
@@ -364,6 +502,9 @@ function desenhar() {
 }
 
 desenhar()
+void abrirLinkCompartilhado()
+// Link aberto com o app já na tela muda só o trecho após o #.
+addEventListener('hashchange', () => void abrirLinkCompartilhado())
 // Mantém o painel "Agora" em dia com o relógio.
 setInterval(redesenharAgora, 30_000)
 

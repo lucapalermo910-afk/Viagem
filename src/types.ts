@@ -12,6 +12,8 @@ export interface Compromisso {
   titulo: string
   /** Texto de busca para o mapa */
   local: string | null
+  /** Tempo previsto no lugar, em minutos (informado por quem edita) */
+  duracaoMin?: number
 }
 
 export interface Dia {
@@ -26,6 +28,8 @@ export interface Dia {
   tipo: TipoDia
   pendencias: string[]
   compromissos: Compromisso[]
+  /** Alterado no app depois da importação */
+  editado?: boolean
 }
 
 export interface Viagem {

@@ -78,6 +78,13 @@ export function extrairCompromissos(
   return [...comHora, ...paradas]
 }
 
+/** Pendências que dependem só do texto do dia. */
+export function pendenciasDoTexto(programa: string, detalhes: string): string[] {
+  const conteudo = [programa, detalhes].filter(Boolean).join('\n')
+  if (!conteudo) return ['Dia sem programa']
+  return /\?|\bou\b/i.test(conteudo) ? ['Decisão em aberto'] : []
+}
+
 /**
  * Converte as linhas brutas da planilha em uma viagem.
  * Espera um cabeçalho com as colunas Data, Base, Programa, Hotel e Diária.
@@ -116,9 +123,7 @@ export function linhasParaViagem(linhas: Linha[]): Viagem {
     const hotel = diaria != null || hotelNovo ? hotelAtual : null
 
     const conteudo = [programa, detalhes].filter(Boolean).join('\n')
-    const pendencias: string[] = []
-    if (!conteudo) pendencias.push('Dia sem programa')
-    else if (/\?|\bou\b/i.test(conteudo)) pendencias.push('Decisão em aberto')
+    const pendencias = pendenciasDoTexto(programa, detalhes)
     if (hotelNovo && !hotelNovo.endereco) pendencias.push('Hotel sem endereço')
 
     const tipo = classificar(base, programa, conteudo)
