@@ -3,6 +3,8 @@ import { readSheet } from 'read-excel-file/browser'
 import { linhasParaViagem, pendenciasDoTexto } from './parser'
 import { viagemExemplo } from './exemplo'
 import type { Compromisso, Dia, Viagem } from './types'
+import { horarioNoDia, lerMaps } from './maps'
+import { lerImagem } from './ocr'
 import { distanciaKm, estimar, FOLGA_MIN, type Estimativa, type Ponto } from './trajeto'
 
 const CHAVE = 'viagem:v2'
@@ -158,13 +160,81 @@ function campo(rotulo: string, controle: HTMLElement) {
   return h('label', { class: 'campo' }, h('span', {}, rotulo), controle)
 }
 
-function linhaEdicao(c: Partial<Compromisso>) {
-  const hora = h('input', { type: 'time', value: c.hora ?? '', 'aria-label': 'Horário' })
-  const titulo = h('input', { type: 'text', value: c.titulo ?? '', placeholder: 'O quê', 'aria-label': 'Compromisso' })
-  const dur = h('input', { type: 'number', min: '0', step: '5', inputmode: 'numeric', placeholder: 'min', 'aria-label': 'Duração em minutos', value: c.duracaoMin ? String(c.duracaoMin) : '' })
-  const local = h('input', { type: 'text', value: c.local ?? '', placeholder: 'Local para o mapa (opcional)', 'aria-label': 'Local' })
+/** Avisos de horário de funcionamento de um compromisso. */
+function avisosDeHorario(c: Compromisso): string[] {
+  if (c.fechado) return ['Lugar fechado neste dia']
+  if (!c.hora || (!c.abre && !c.fecha)) return []
+  const ini = minutos(c.hora)
+  const fim = ini + (c.duracaoMin ?? 0)
+  const cedo = c.abre && ini < minutos(c.abre)
+  const tarde = c.fecha && fim > minutos(c.fecha)
+  return cedo || tarde ? ['Fora do horário de funcionamento'] : []
+}
+
+function linhaEdicao(c: Partial<Compromisso>, dataISO: string) {
+  const inp = (campo: string, attrs: Record<string, string>) => h('input', { 'data-c': campo, ...attrs })
+  const rot = (texto: string, el: HTMLElement) => h('label', { class: 'mini' }, h('span', {}, texto), el)
+  const abre = inp('abre', { type: 'time', value: c.abre ?? '' })
+  const fecha = inp('fecha', { type: 'time', value: c.fecha ?? '' })
+  const trajeto = inp('trajeto', { type: 'number', min: '0', inputmode: 'numeric', value: c.trajetoMin ? String(c.trajetoMin) : '' })
+  const fechado = inp('fechado', { type: 'checkbox' })
+  fechado.checked = !!c.fechado
+
+  const estado = h('p', { class: 'ed-estado', role: 'status' })
+  const arquivo = h('input', { type: 'file', accept: 'image/*', hidden: '' })
+  const print = h('button', { type: 'button', class: 'btn-mini' }, '📷 Ler print do Maps')
+  print.addEventListener('click', () => arquivo.click())
+  arquivo.addEventListener('change', async () => {
+    const f = arquivo.files?.[0]
+    if (!f) return
+    print.disabled = true
+    estado.textContent = 'Lendo o print…'
+    try {
+      const texto = await lerImagem(f, (p) => { estado.textContent = `Lendo o print… ${Math.round(p * 100)}%` })
+      const leitura = lerMaps(texto)
+      const hd = horarioNoDia(leitura, dataISO)
+      const achei: string[] = []
+      if (hd?.fechado) {
+        fechado.checked = true
+        achei.push(`fechado ${fmt(dataISO, { weekday: 'long' })}`)
+      } else if (hd) {
+        fechado.checked = false
+        if (hd.abre) abre.value = hd.abre
+        if (hd.fecha) fecha.value = hd.fecha
+        achei.push(`horário ${hd.abre ?? '?'}–${hd.fecha ?? '?'}` + (hd.fonte === 'status' ? ' (vale para o dia do print, não o da visita)' : ` de ${fmt(dataISO, { weekday: 'long' })}`))
+      }
+      if (leitura.trajetosMin.length) {
+        trajeto.value = String(leitura.trajetosMin[0])
+        achei.push(`trajeto ${duracao(leitura.trajetosMin[0])}`)
+      }
+      estado.textContent = achei.length
+        ? `Li: ${achei.join('; ')}. Confira antes de salvar.`
+        : 'Não encontrei horário nem tempo de rota neste print.'
+    } catch {
+      estado.textContent = 'Não consegui ler esta imagem.'
+    }
+    print.disabled = false
+    arquivo.value = ''
+  })
+
   const tirar = h('button', { type: 'button', class: 'btn-mini', 'aria-label': 'Remover compromisso' }, '✕')
-  const linha = h('div', { class: 'ed-linha' }, hora, titulo, dur, tirar, local)
+  const linha = h('fieldset', { class: 'ed-linha' },
+    h('div', { class: 'ed-topo' },
+      inp('titulo', { type: 'text', value: c.titulo ?? '', placeholder: 'O quê', 'aria-label': 'Compromisso' }),
+      tirar,
+    ),
+    inp('local', { type: 'text', value: c.local ?? '', placeholder: 'Local para o mapa (opcional)', 'aria-label': 'Local' }),
+    h('div', { class: 'ed-grade' },
+      rot('Horário', inp('hora', { type: 'time', value: c.hora ?? '' })),
+      rot('Duração (min)', inp('dur', { type: 'number', min: '0', step: '5', inputmode: 'numeric', value: c.duracaoMin ? String(c.duracaoMin) : '' })),
+      rot('Trajeto (min)', trajeto),
+      rot('Abre', abre),
+      rot('Fecha', fecha),
+    ),
+    h('label', { class: 'ed-check' }, fechado, 'Fechado neste dia'),
+    h('div', {}, print, arquivo),
+    estado,
+  )
   tirar.addEventListener('click', () => linha.remove())
   return linha
 }
@@ -172,15 +242,15 @@ function linhaEdicao(c: Partial<Compromisso>) {
 function editarDia(d: Dia) {
   const programa = h('textarea', { rows: '2' }, d.programa)
   const detalhes = h('textarea', { rows: '4' }, d.detalhes)
-  const linhas = h('div', { class: 'ed-linhas' }, ...d.compromissos.map(linhaEdicao))
+  const linhas = h('div', { class: 'ed-linhas' }, ...d.compromissos.map((c) => linhaEdicao(c, d.data)))
   const mais = h('button', { type: 'button', class: 'btn' }, '+ Compromisso')
-  mais.addEventListener('click', () => linhas.append(linhaEdicao({})))
+  mais.addEventListener('click', () => linhas.append(linhaEdicao({}, d.data)))
   const cancelar = h('button', { type: 'button', class: 'btn' }, 'Cancelar')
   const form = h('form', { method: 'dialog' },
     h('h2', {}, `${fmt(d.data, { weekday: 'long', day: 'numeric', month: 'long' })}`),
     campo('Programa', programa),
     campo('Detalhes e reservas', detalhes),
-    h('p', { class: 'ed-titulo' }, 'Compromissos (horário, descrição, duração em minutos)'),
+    h('p', { class: 'ed-titulo' }, 'Compromissos'),
     linhas, mais,
     h('div', { class: 'acoes' }, h('button', { type: 'submit', class: 'btn btn-principal' }, 'Salvar'), cancelar),
   )
@@ -191,13 +261,24 @@ function editarDia(d: Dia) {
     d.programa = programa.value.trim()
     d.detalhes = detalhes.value.trim()
     d.compromissos = [...linhas.children].flatMap((l) => {
-      const [hora, titulo, dur, local] = [...l.querySelectorAll('input')].map((i) => i.value.trim())
-      if (!titulo) return []
-      const c: Compromisso = { hora: hora || null, titulo, local: local || null }
-      if (Number(dur) > 0) c.duracaoMin = Number(dur)
+      const el = (campo: string) => l.querySelector<HTMLInputElement>(`[data-c="${campo}"]`)!
+      const v = (campo: string) => el(campo).value.trim()
+      if (!v('titulo')) return []
+      const c: Compromisso = { hora: v('hora') || null, titulo: v('titulo'), local: v('local') || null }
+      if (Number(v('dur')) > 0) c.duracaoMin = Number(v('dur'))
+      if (Number(v('trajeto')) > 0) c.trajetoMin = Number(v('trajeto'))
+      if (el('fechado').checked) c.fechado = true
+      else {
+        if (v('abre')) c.abre = v('abre')
+        if (v('fecha')) c.fecha = v('fecha')
+      }
       return [c]
     })
-    d.pendencias = [...pendenciasDoTexto(d.programa, d.detalhes), ...d.pendencias.filter((p) => p.startsWith('Hotel'))]
+    d.pendencias = [...new Set([
+      ...pendenciasDoTexto(d.programa, d.detalhes),
+      ...d.pendencias.filter((p) => p.startsWith('Hotel')),
+      ...d.compromissos.flatMap(avisosDeHorario),
+    ])]
     const temConteudo = !!(d.programa || d.detalhes)
     if (d.tipo === 'livre' && temConteudo) d.tipo = 'passeio'
     if (d.tipo === 'passeio' && !temConteudo) d.tipo = 'livre'
@@ -230,13 +311,19 @@ function telaVazia() {
 const hhmmDe = (m: number) => `${p2(Math.floor(m / 60) % 24)}:${p2(m % 60)}`
 const fimDe = (c: Compromisso) => (c.hora && c.duracaoMin ? hhmmDe(minutos(c.hora) + c.duracaoMin) : '')
 
+const detalhesDe = (c: Compromisso, extra: string) => [
+  fimDe(c) && `até ${fimDe(c)}`,
+  !c.hora && c.duracaoMin && duracao(c.duracaoMin),
+  !c.fechado && (c.abre || c.fecha) && `aberto ${c.abre ?? '?'}–${c.fecha ?? '?'}`,
+  c.trajetoMin ? `trajeto ${duracao(c.trajetoMin)} (informado)` : extra,
+].filter(Boolean).join(' · ')
+
 function linhaCompromisso(c: Compromisso, estado = '', extra = '') {
   return h('li', { class: `comp ${estado}` },
     h('span', { class: 'comp-hora' }, c.hora ?? '•'),
     h('span', { class: 'comp-titulo' }, c.titulo,
-      extra || c.duracaoMin
-        ? h('small', {}, [fimDe(c) && `até ${fimDe(c)}`, !c.hora && c.duracaoMin && duracao(c.duracaoMin), extra].filter(Boolean).join(' · '))
-        : null),
+      detalhesDe(c, extra) ? h('small', {}, detalhesDe(c, extra)) : null,
+      ...avisosDeHorario(c).map((a) => h('small', { class: 'alerta' }, a))),
     c.local && h('a', { href: mapa(c.local), target: '_blank', rel: 'noopener', 'aria-label': `Mapa: ${c.titulo}` }, 'mapa'),
   )
 }
@@ -405,11 +492,15 @@ function painelAgora(v: Viagem) {
   )
   // Hora de sair, estimada pela distância em linha reta até o próximo compromisso.
   const tp = proximo ? trajetoAte(proximo) : null
-  if (proximo && tp && typeof tp === 'object') {
-    const sair = minutos(proximo.hora!) - tp.min - FOLGA_MIN
+  const informado = proximo?.trajetoMin
+  const estimado = tp && typeof tp === 'object' ? tp : null
+  if (proximo && (informado || estimado)) {
+    const sair = minutos(proximo.hora!) - (informado ?? estimado!.min) - FOLGA_MIN
     add(caixa, h('p', { class: 'agora-sair' },
-      sair <= min ? 'Saia agora' : `Saia até ${p2(Math.floor(sair / 60))}:${p2(sair % 60)}`,
-      h('small', {}, `Estimativa: ${duracao(tp.min)} ${tp.modo} (${tp.km.toFixed(1).replace('.', ',')} km) mais ${FOLGA_MIN} min de folga. Confirme no Maps.`),
+      sair <= min ? 'Saia agora' : `Saia até ${hhmmDe(Math.max(0, sair))}`,
+      h('small', {}, informado
+        ? `Trajeto informado: ${duracao(informado)}, mais ${FOLGA_MIN} min de folga. Vale para a origem do print.`
+        : `Estimativa: ${duracao(estimado!.min)} ${estimado!.modo} (${estimado!.km.toFixed(1).replace('.', ',')} km) mais ${FOLGA_MIN} min de folga. Confirme no Maps.`),
     ))
   } else if (proximo && tp) {
     add(caixa, h('p', { class: 'agora-texto' }, `Trajeto: ${textoTrajeto(tp)}.`))

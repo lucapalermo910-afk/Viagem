@@ -14,6 +14,13 @@ export interface Compromisso {
   local: string | null
   /** Tempo previsto no lugar, em minutos (informado por quem edita) */
   duracaoMin?: number
+  /** Horário de funcionamento no dia da visita (HH:MM) */
+  abre?: string
+  fecha?: string
+  /** O lugar não abre no dia da visita */
+  fechado?: boolean
+  /** Tempo de trajeto informado ou lido de um print do Maps, em minutos */
+  trajetoMin?: number
 }
 
 export interface Dia {
