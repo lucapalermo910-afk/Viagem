@@ -6,6 +6,28 @@ export interface Hotel {
   link: string | null
 }
 
+export type TipoComp =
+  | 'passeio' | 'restaurante' | 'ingresso' | 'compras' | 'livre'
+  | 'voo' | 'trem' | 'onibus' | 'outro'
+  | 'checkin' | 'checkout'
+export type Reserva = 'sim' | 'nao' | 'nao-precisa' | 'a-decidir'
+
+export interface Hospedagem {
+  nome: string
+  cidade: string
+  /** AAAA-MM-DD */
+  checkin: string
+  checkout: string
+  horaCheckin?: string
+  horaCheckout?: string
+  endereco: string
+  link: string | null
+  codigo?: string
+  valor?: number
+  pago?: boolean
+  obs?: string
+}
+
 export interface Compromisso {
   /** HH:MM no horário local do lugar; null quando a planilha não informa */
   hora: string | null
@@ -21,6 +43,23 @@ export interface Compromisso {
   fechado?: boolean
   /** Tempo de trajeto informado ou lido de um print do Maps, em minutos */
   trajetoMin?: number
+  /** Ausente = passeio */
+  tipo?: TipoComp
+  reserva?: Reserva
+  codigo?: string
+  nomeReserva?: string
+  pessoas?: number
+  pagamento?: string
+  custo?: number
+  pago?: boolean
+  obs?: string
+  /** Só para transporte */
+  de?: string
+  para?: string
+  chegada?: string
+  numero?: string
+  assento?: string
+  terminal?: string
 }
 
 export interface Dia {
@@ -41,4 +80,5 @@ export interface Dia {
 
 export interface Viagem {
   dias: Dia[]
+  hospedagens?: Hospedagem[]
 }

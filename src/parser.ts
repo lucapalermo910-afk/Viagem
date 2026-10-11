@@ -1,10 +1,12 @@
 import type { Compromisso, Dia, Hotel, TipoDia, Viagem } from './types'
+import { distribuirHospedagens, hospedagensDosDias, localTransporte } from './modelo'
+import { recalcular } from './pendencias'
 
 type Celula = unknown
 type Linha = Celula[]
 
 const texto = (c: Celula): string =>
-  c == null ? '' : String(c).replace(/ /g, ' ').trim()
+  c == null ? '' : String(c).replace(/\u00a0/g, ' ').replace(/\r\n?/g, '\n').trim()
 
 const normalizar = (s: string): string =>
   s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim()
@@ -45,6 +47,7 @@ export function extrairCompromissos(
   programa: string, detalhes: string, tipo: TipoDia, base: string,
 ): Compromisso[] {
   const comHora: Compromisso[] = []
+  let horaPartida: string | null = null
   const local = detalhes.match(/^local:\s*(.+)$/im)?.[1].trim() ?? null
 
   for (const linha of [programa, detalhes].join('\n').split('\n').map((l) => l.trim())) {
@@ -52,8 +55,11 @@ export function extrairCompromissos(
     if (voo) {
       const [h1, m1] = voo[2].split(':')
       const [h2, m2] = voo[4].split(':')
-      comHora.push({ hora: hhmm(h1, m1), titulo: `Decolagem de ${voo[1]}`, local: `Aeroporto ${voo[1]}` })
-      comHora.push({ hora: hhmm(h2, m2), titulo: `Pouso em ${voo[3]}`, local: null })
+      const terminal = linha.slice(voo.index).match(/terminal\s*\w+/i)?.[0]
+      comHora.push({
+        hora: hhmm(h1, m1), titulo: `${voo[1]} → ${voo[3]}`, local: `Aeroporto ${voo[1]}`,
+        tipo: 'voo', de: voo[1], para: voo[3], chegada: hhmm(h2, m2), ...(terminal ? { terminal } : {}),
+      })
       continue
     }
     const t = linha.match(RE_HORA)
@@ -61,28 +67,43 @@ export function extrairCompromissos(
       const generica = /^hor[aá]rio/i.test(linha)
       // Tira os horários do título: "MIRANTE 16H OU 16H30" vira "MIRANTE".
       const limpo = linha.replace(new RegExp(RE_HORA, 'g'), '').replace(/(\s*\bou\b\s*)+$/i, '').trim()
+      const hora = hhmm(t[1], t[2] ?? t[3] ?? '00')
+      // "Horário de partida" num dia de deslocamento é o horário do próprio trecho.
+      if (generica && tipo === 'deslocamento') { horaPartida = hora; continue }
       comHora.push({
-        hora: hhmm(t[1], t[2] ?? t[3] ?? '00'),
+        hora, tipo: 'passeio',
         titulo: generica && programa ? `Partida: ${programa}` : limpo || linha,
         local: generica ? local : `${limpo || linha}, ${base}`,
       })
     }
   }
 
+  // Dia de deslocamento: "A → B → C de trem; resto" vira um trecho de A até C.
+  if (tipo === 'deslocamento') {
+    const trecho = programa.split(';')[0].trim()
+    const partes = trecho.split(/→|>>/).map((x) => x.trim()).filter(Boolean)
+    if (partes.length >= 2) {
+      const ultimo = partes[partes.length - 1]
+      const meio = ultimo.match(/^(.*?)\s+de\s+(.+)$/i)
+      const para = meio ? meio[1] : ultimo
+      const c: Compromisso = {
+        hora: horaPartida, titulo: `${partes[0]} → ${para}`, local: null,
+        tipo: /shinkansen|trem/i.test(trecho) ? 'trem' : 'outro', de: partes[0], para,
+        ...(local ? { terminal: local } : {}),
+        ...(partes.length > 2 || meio ? { obs: trecho } : {}),
+      }
+      c.local = localTransporte(c)
+      comHora.push(c)
+    }
+  }
+
   const paradas: Compromisso[] =
     tipo === 'passeio' && !programa.includes('?')
       ? programa.split(/[,;→]/).map((p) => p.trim()).filter(Boolean)
-          .map((p) => ({ hora: null, titulo: p, local: `${p}, ${base}` }))
+          .map((p) => ({ hora: null, titulo: p, local: `${p}, ${base}`, tipo: 'passeio' as const }))
       : []
 
   return [...comHora, ...paradas]
-}
-
-/** Pendências que dependem só do texto do dia. */
-export function pendenciasDoTexto(programa: string, detalhes: string): string[] {
-  const conteudo = [programa, detalhes].filter(Boolean).join('\n')
-  if (!conteudo) return ['Dia sem programa']
-  return /\?|\bou\b/i.test(conteudo) ? ['Decisão em aberto'] : []
 }
 
 /**
@@ -123,17 +144,15 @@ export function linhasParaViagem(linhas: Linha[]): Viagem {
     const hotel = diaria != null || hotelNovo ? hotelAtual : null
 
     const conteudo = [programa, detalhes].filter(Boolean).join('\n')
-    const pendencias = pendenciasDoTexto(programa, detalhes)
-    if (hotelNovo && !hotelNovo.endereco) pendencias.push('Hotel sem endereço')
 
     const tipo = classificar(base, programa, conteudo)
     dias.push({
-      data, base, programa, detalhes, hotel, diaria, tipo, pendencias,
+      data, base, programa, detalhes, hotel, diaria, tipo, pendencias: [],
       compromissos: extrairCompromissos(programa, detalhes, tipo, base),
     })
   }
 
   if (dias.length === 0) throw new Error('Nenhuma linha com data válida foi encontrada.')
   dias.sort((a, b) => a.data.localeCompare(b.data))
-  return { dias }
+  return recalcular(distribuirHospedagens({ dias, hospedagens: hospedagensDosDias(dias) }))
 }

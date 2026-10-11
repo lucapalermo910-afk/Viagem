@@ -2,6 +2,7 @@ node_modules
 dist
 # Dados pessoais de viagem nunca entram no repositório
 *.xlsx
+!public/modelo-roteiro.xlsx
 *.xls
 *.csv
 # Copiado de node_modules no build
