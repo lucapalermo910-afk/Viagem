@@ -366,3 +366,8 @@ function desenhar() {
 desenhar()
 // Mantém o painel "Agora" em dia com o relógio.
 setInterval(redesenharAgora, 30_000)
+
+// Uso sem internet: registra o service worker (só no site publicado).
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  navigator.serviceWorker.register('./sw.js').catch(() => { /* segue funcionando online */ })
+}
