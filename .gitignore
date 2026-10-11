@@ -4,3 +4,5 @@ dist
 *.xlsx
 *.xls
 *.csv
+# Copiado de node_modules no build
+public/ocr
