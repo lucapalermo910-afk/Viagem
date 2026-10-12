@@ -1,6 +1,7 @@
 // Guarda o app no aparelho para abrir sem internet.
 // Os dados da viagem ficam no armazenamento do navegador, não aqui.
-const CACHE = 'roteiro-v2'
+// Um cache por versão publicada (vem no endereço do próprio service worker).
+const CACHE = 'roteiro-' + (new URL(location.href).searchParams.get('v') || 'dev')
 
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
@@ -24,13 +25,15 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const req = e.request
-  if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return
+  const url = new URL(req.url)
+  // versao.json sempre vem da rede: é como o app descobre que há versão nova.
+  if (req.method !== 'GET' || url.origin !== location.origin || url.pathname.endsWith('/versao.json')) return
   e.respondWith((async () => {
     const cache = await caches.open(CACHE)
     if (req.mode === 'navigate') {
       // Página: tenta a versão nova; sem internet, usa a guardada.
       try {
-        const nova = await fetch(req)
+        const nova = await fetch(req, { cache: 'no-cache' })
         cache.put('./', nova.clone())
         return nova
       } catch {
