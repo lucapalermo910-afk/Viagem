@@ -124,3 +124,5 @@ h1 { font-size: clamp(1.5rem, 5.5vw, 2.1rem); line-height: 1.15; margin: 4px 0 8
 .custos tbody th { font-weight: 600; }
 .custos tr.total th, .custos tr.total td { font-weight: 800; }
 .editor select { width: 100%; min-width: 0; font: inherit; font-size: 1rem; padding: 10px 8px; border: 2px solid var(--linha); border-radius: 12px; background: #fffdfa; color: var(--tinta); }
+
+.nova-versao { position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 10; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; max-width: 656px; margin: 0 auto; padding: 12px 14px; border-radius: 18px; background: var(--tinta); color: #fff; font-weight: 700; box-shadow: 0 10px 30px rgb(40 20 0 / 30%); }

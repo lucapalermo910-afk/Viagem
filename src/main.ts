@@ -730,6 +730,26 @@ addEventListener('hashchange', () => void abrirLinkCompartilhado())
 setInterval(redesenharAgora, 30_000)
 
 // Uso sem internet: registra o service worker (só no site publicado).
+// A versão no endereço faz o navegador trocar o service worker a cada publicação.
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
-  navigator.serviceWorker.register('./sw.js').catch(() => { /* segue funcionando online */ })
+  navigator.serviceWorker.register(`./sw.js?v=${__VERSAO__}`).catch(() => { /* segue funcionando online */ })
 }
+
+// Uma aba aberta há dias continua com o código antigo na memória.
+// Ao voltar para a aba, confere se há versão nova publicada e oferece atualizar.
+async function conferirVersao() {
+  if (!import.meta.env.PROD || document.querySelector('.nova-versao')) return
+  try {
+    const r = await fetch(`./versao.json?t=${Date.now()}`, { cache: 'no-store' })
+    const { versao } = (await r.json()) as { versao: string }
+    if (versao === __VERSAO__) return
+    const botao = h('button', { type: 'button', class: 'btn btn-principal' }, 'Atualizar agora')
+    botao.addEventListener('click', () => location.reload())
+    document.body.append(h('div', { class: 'nova-versao', role: 'status' },
+      h('span', {}, 'Há uma versão nova do app.'), botao))
+  } catch {
+    /* sem internet: fica na versão atual */
+  }
+}
+void conferirVersao()
+document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && void conferirVersao())
